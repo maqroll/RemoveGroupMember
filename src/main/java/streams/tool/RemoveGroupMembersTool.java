@@ -77,10 +77,12 @@ public class RemoveGroupMembersTool {
                 adminClient,
                 options.valueOf(prefixKeepOption),
                 options.valueOf(executeOption));
-      } else {
+      } else if (options.valueOf(instanceIdOption) != null) {
         exitCode =
             deleteActiveConsumers(
                 groupId, adminClient, instanceIds, options.valueOf(executeOption));
+      } else {
+        exitCode = showActiveConsumers(groupId, adminClient);
       }
     } catch (final Throwable e) {
       exitCode = EXIT_CODE_ERROR;
@@ -134,10 +136,8 @@ public class RemoveGroupMembersTool {
             .get();
       }
     } else {
-      throw new IllegalStateException(
-          String.format(
-              "Refuse to remove members that doesn't fit prefix \"%s\" from application \"%s\" because none found",
-              prefix, groupId));
+      LOGGER.warning(
+          String.format("All the active instances start with %s. Nothing to delete.", prefix));
     }
     return 0;
   }
@@ -168,18 +168,19 @@ public class RemoveGroupMembersTool {
     final List<String> instancesPresent =
         staticMembers.stream().filter(id -> instanceIds.contains(id)).collect(Collectors.toList());
 
-    final List<String> missingInstanceIds =
+    final List<String> presentInstanceIds =
         instanceIds.stream()
-            .filter(instanceIdToRemove -> !instancesPresent.contains(instanceIdToRemove))
+            .filter(instanceIdToRemove -> instancesPresent.contains(instanceIdToRemove))
             .collect(Collectors.toList());
-    if (missingInstanceIds.isEmpty()) {
+
+    if (!presentInstanceIds.isEmpty()) {
       LOGGER.warning(
           String.format(
               "Removing following members: %s  from application %s",
-              instanceIds.toString(), groupId));
+              presentInstanceIds.toString(), groupId));
       if (execute) {
         Set<MemberToRemove> membersToRemove =
-            instanceIds.stream().map(s -> new MemberToRemove(s)).collect(Collectors.toSet());
+            presentInstanceIds.stream().map(s -> new MemberToRemove(s)).collect(Collectors.toSet());
         adminClient
             .removeMembersFromConsumerGroup(
                 groupId, new RemoveMembersFromConsumerGroupOptions(membersToRemove))
@@ -187,11 +188,29 @@ public class RemoveGroupMembersTool {
             .get();
       }
     } else {
-      throw new IllegalStateException(
-          String.format(
-              "Refuse to remove following members: %s from application \"%s\" because they are no active. Active members: %s",
-              missingInstanceIds.toString(), groupId, staticMembers.toString()));
+      LOGGER.warning(String.format("None of the instances to remove are active."));
     }
+    return 0;
+  }
+
+  protected int showActiveConsumers(final String groupId, final Admin adminClient)
+      throws ExecutionException, InterruptedException {
+
+    final DescribeConsumerGroupsResult describeResult =
+        adminClient.describeConsumerGroups(
+            Collections.singleton(groupId),
+            new DescribeConsumerGroupsOptions().timeoutMs(10 * 1000));
+    final List<MemberDescription> members =
+        new ArrayList<>(describeResult.describedGroups().get(groupId).get().members());
+
+    final List<String> staticMembers =
+        members.stream()
+            .filter(memberDescription -> memberDescription.groupInstanceId().isPresent())
+            .map(memberDescription -> memberDescription.groupInstanceId().get())
+            .collect(Collectors.toList());
+
+    LOGGER.warning(String.format("Current members: %s", staticMembers.toString()));
+
     return 0;
   }
 
@@ -284,14 +303,6 @@ public class RemoveGroupMembersTool {
 
     checkInvalidArgs(optionParser, options, allScenarioOptions, instanceIdOption);
     checkInvalidArgs(optionParser, options, allScenarioOptions, prefixKeepOption);
-
-    if (!options.hasArgument(prefixKeepOption) && !options.hasArgument(instanceIdOption)) {
-      CommandLineUtils.printUsageAndDie(
-          optionParser,
-          String.format(
-              "Either %s or %s arguments are required",
-              prefixKeepOption.toString(), instanceIdOption.toString()));
-    }
   }
 
   public static void main(final String[] args) {
